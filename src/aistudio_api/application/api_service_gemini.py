@@ -291,8 +291,7 @@ async def handle_attempt_exception(
 
     runtime_state.record(target_model, "errors")
     record_rotator_event("error", model=target_model)
-    logger.error("Gemini 未知严重异常: %s", exc)
-    logger.debug("Gemini 异常堆栈详情:", exc_info=True)
+    logger.error("Gemini 未知严重异常: %s", exc, exc_info=True)
     raise HTTPException(
         500, detail={"message": str(exc), "type": "server_error"}
     ) from exc
