@@ -520,7 +520,11 @@ async def _with_initial_heartbeats(
             "candidates": [
                 {"content": {"role": "model", "parts": [{"text": ""}]}, "index": 0}
             ],
-            "modelVersion": model_path.removeprefix("models/"),
+            # Match normalize_gemini_request: downstream collectors require a
+            # stable model identity across heartbeat, content and usage chunks.
+            "modelVersion": (
+                model_path if model_path.startswith("models/") else f"models/{model_path}"
+            ),
         }
     ) + "\n\n"
     pending = asyncio.create_task(anext(source))

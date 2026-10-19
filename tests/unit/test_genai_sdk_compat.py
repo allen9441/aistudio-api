@@ -114,6 +114,9 @@ async def test_genai_sdk_aio_streaming(mock_client: MagicMock) -> None:
                 chunks.append(chunk)
 
             assert len(chunks) == 5
+            assert {chunk.model_version for chunk in chunks} == {
+                "models/gemini-3.8-flash"
+            }
             heartbeat = chunks.pop(0)
             assert heartbeat.candidates is not None
             heartbeat_content = heartbeat.candidates[0].content

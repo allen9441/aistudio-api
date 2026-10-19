@@ -39,7 +39,7 @@ async def test_heartbeats_repeat_without_cancelling_upstream_and_stop_after_cont
             "candidates": [
                 {"content": {"role": "model", "parts": [{"text": ""}]}, "index": 0}
             ],
-            "modelVersion": "gemini-test",
+            "modelVersion": "models/gemini-test",
         }
         assert await anext(stream) == initial
         assert await anext(stream) == initial
@@ -84,7 +84,10 @@ async def test_disabled_heartbeats_preserve_stream():
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_covers_account_preparation_and_preserves_retry(monkeypatch):
+@pytest.mark.parametrize("model_path", ["gemini-4-argon", "models/gemini-4-argon"])
+async def test_heartbeat_covers_account_preparation_and_preserves_retry(
+    monkeypatch, model_path
+):
     ready = asyncio.Event()
 
     async def prepare(*args, **kwargs):
@@ -108,7 +111,7 @@ async def test_heartbeat_covers_account_preparation_and_preserves_retry(monkeypa
         contents=[{"role": "user", "parts": [{"text": "hi"}]}]
     )
     response = await service.handle_gemini_generate_content(
-        "gemini-2.5-pro", request, client, stream=True
+        model_path, request, client, stream=True
     )
     stream = response.body_iterator
     initial = heartbeat_payload(await anext(stream))
@@ -119,6 +122,11 @@ async def test_heartbeat_covers_account_preparation_and_preserves_retry(monkeypa
     assert attempts == 2
     assert chunks[0]["candidates"][0]["content"]["parts"] == [{"text": "hello"}]
     assert chunks[-1]["candidates"][0]["finishReason"] == "STOP"
+    # gproxy rejects a change in modelVersion even when the only difference is
+    # the models/ prefix. Include the heartbeat and terminal usage in this check.
+    assert {chunk["modelVersion"] for chunk in [initial, *chunks]} == {
+        "models/gemini-4-argon"
+    }
 
 
 @pytest.mark.asyncio
