@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from collections.abc import AsyncGenerator
+from contextlib import suppress
 
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -26,6 +29,7 @@ from aistudio_api.application.account_orchestrator import (
 from aistudio_api.application.chat_service import (
     normalize_gemini_request,
 )
+from aistudio_api.config import settings
 from aistudio_api.domain.errors import (
     AistudioError,
     AuthError,
@@ -502,6 +506,46 @@ def format_sse_error(exc: Exception) -> str:
     )
 
 
+async def _with_initial_heartbeats(
+    source: AsyncGenerator[str, None], *, model_path: str, interval: float
+) -> AsyncGenerator[str, None]:
+    """Keep the connection active until the first real SSE chunk, without cancelling it."""
+    if interval <= 0:
+        async for chunk in source:
+            yield chunk
+        return
+
+    heartbeat = "data: " + json.dumps(
+        {
+            "candidates": [
+                {"content": {"role": "model", "parts": [{"text": ""}]}, "index": 0}
+            ],
+            "modelVersion": model_path.removeprefix("models/"),
+        }
+    ) + "\n\n"
+    pending = asyncio.create_task(anext(source))
+    try:
+        yield heartbeat
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if done:
+                break
+            yield heartbeat
+        try:
+            first_chunk = pending.result()
+        except StopAsyncIteration:
+            return
+        yield first_chunk
+        async for chunk in source:
+            yield chunk
+    finally:
+        if not pending.done():
+            pending.cancel()
+        with suppress(asyncio.CancelledError, StopAsyncIteration):
+            await pending
+        await source.aclose()
+
+
 def _build_gemini_streaming_response(
     *,
     client: AIStudioClient,
@@ -600,7 +644,11 @@ def _build_gemini_streaming_response(
 
 
     return StreamingResponse(
-        stream_response(),
+        _with_initial_heartbeats(
+            stream_response(),
+            model_path=model_path,
+            interval=settings.stream_heartbeat_interval,
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

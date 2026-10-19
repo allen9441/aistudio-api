@@ -113,7 +113,15 @@ async def test_genai_sdk_aio_streaming(mock_client: MagicMock) -> None:
             ):
                 chunks.append(chunk)
 
-            assert len(chunks) == 4
+            assert len(chunks) == 5
+            heartbeat = chunks.pop(0)
+            assert heartbeat.candidates is not None
+            heartbeat_content = heartbeat.candidates[0].content
+            assert heartbeat_content is not None
+            assert heartbeat_content.parts is not None
+            assert heartbeat_content.parts[0].text == ""
+            assert heartbeat.candidates[0].finish_reason is None
+            assert heartbeat.usage_metadata is None
 
             # Chunk 0: thinking
             assert chunks[0].candidates is not None

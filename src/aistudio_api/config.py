@@ -264,6 +264,9 @@ class Settings:
     api_keys: frozenset[str] = frozenset()
     timeout_replay: int = int(os.getenv("AISTUDIO_TIMEOUT_REPLAY", "120"))
     timeout_stream: int = int(os.getenv("AISTUDIO_TIMEOUT_STREAM", "120"))
+    stream_heartbeat_interval: int = max(
+        0, _load_int_env("AISTUDIO_STREAM_HEARTBEAT_INTERVAL", default=15)
+    )
     timezone: str = resolve_timezone()
     locale: str = resolve_locale()
     dump_raw_response: bool = os.getenv("AISTUDIO_DUMP_RAW_RESPONSE", "0") in (
