@@ -545,6 +545,10 @@ def _normalize_gemini_safety_settings(
     return normalized
 
 
+# Documented Gemini bypass value for function calls lacking a real signature.
+_DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
+
 def normalize_gemini_request(
     req: GeminiGenerateContentRequest, requested_model: str
 ) -> NormalizedGeminiRequest:
@@ -591,12 +595,21 @@ def normalize_gemini_request(
             if part.functionCall is not None:
                 fc = part.functionCall
                 args_payload = fc.args if fc.args is not None else {}
+                signature = part.thoughtSignature
+                if (
+                    not signature
+                    and role == "model"
+                    and not any(p.function_call for p in parts)
+                ):
+                    # Gemini 3 rejects history whose first function call has no
+                    # signature; clients (e.g. Cherry Studio) often drop it.
+                    signature = _DUMMY_THOUGHT_SIGNATURE
                 parts.append(
                     AistudioPart(
                         function_call=(fc.name, args_payload, fc.id)
                         if fc.id
                         else (fc.name, args_payload),
-                        thought_signature=part.thoughtSignature,
+                        thought_signature=signature,
                     )
                 )
                 continue
