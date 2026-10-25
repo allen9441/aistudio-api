@@ -10,6 +10,39 @@ from aistudio_api.application.chat_service import normalize_gemini_request
 from aistudio_api.infrastructure.gateway.wire_types import AistudioImageOutputMode
 
 
+@pytest.mark.parametrize("role", ["model", "user"])
+@pytest.mark.parametrize("signature", [None, "real-signature"])
+def test_function_call_signature_fallback_preserves_real_signatures(role, signature):
+    first_part = {"functionCall": {"name": "first", "args": {}, "id": "call-1"}}
+    if signature is not None:
+        first_part["thoughtSignature"] = signature
+    req = GeminiGenerateContentRequest.model_validate(
+        {
+            "contents": [
+                {
+                    "role": role,
+                    "parts": [
+                        {"text": "calling tools"},
+                        first_part,
+                        {"functionCall": {"name": "second", "args": {}}},
+                    ],
+                }
+            ],
+            "generationConfig": {"seed": 42},
+        }
+    )
+    normalized = normalize_gemini_request(req, "gemini-3.7-flash")
+    parts = normalized.contents[0].parts
+    expected = signature
+    if role == "model" and signature is None:
+        expected = "skip_thought_signature_validator"
+    assert parts[1].thought_signature == expected
+    assert parts[1].function_call == ("first", {}, "call-1")
+    assert parts[2].thought_signature is None
+    assert normalized.generation_config_overrides is not None
+    assert normalized.generation_config_overrides["seed"] == 42
+
+
 def test_normalize_gemini_request_exposes_generation_config_overrides():
     req = GeminiGenerateContentRequest(
         contents=[GeminiContent(role="user", parts=[GeminiPart(text="hello")])],

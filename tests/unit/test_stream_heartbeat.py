@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from starlette.responses import StreamingResponse
 
 from aistudio_api.api.schemas import GeminiGenerateContentRequest
 from aistudio_api.application import api_service_gemini as service
@@ -107,13 +108,14 @@ async def test_heartbeat_covers_account_preparation_and_preserves_retry(
 
     client = MagicMock()
     client.stream_generate_content = generate
-    request = GeminiGenerateContentRequest(
-        contents=[{"role": "user", "parts": [{"text": "hi"}]}]
+    request = GeminiGenerateContentRequest.model_validate(
+        {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
     )
     response = await service.handle_gemini_generate_content(
         model_path, request, client, stream=True
     )
-    stream = response.body_iterator
+    assert isinstance(response, StreamingResponse)
+    stream = aiter(response.body_iterator)
     initial = heartbeat_payload(await anext(stream))
     assert initial["candidates"][0]["content"]["parts"] == [{"text": ""}]
     assert attempts == 0
@@ -135,12 +137,13 @@ async def test_upstream_error_still_emits_gemini_sse_error(monkeypatch):
         service, "ensure_active_account", AsyncMock(side_effect=ValueError("bad"))
     )
     monkeypatch.setattr(settings, "stream_heartbeat_interval", 15)
-    request = GeminiGenerateContentRequest(
-        contents=[{"role": "user", "parts": [{"text": "hi"}]}]
+    request = GeminiGenerateContentRequest.model_validate(
+        {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
     )
     response = await service.handle_gemini_generate_content(
         "gemini-test", request, MagicMock(), stream=True
     )
+    assert isinstance(response, StreamingResponse)
     chunks = [heartbeat_payload(chunk) async for chunk in response.body_iterator]
     assert len(chunks) == 2
     assert chunks[-1]["error"]["code"] == 400

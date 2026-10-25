@@ -102,7 +102,7 @@ class RequestCaptureService:
         return captured
 
     async def _ensure_template(self, model: str) -> CapturedRequest:
-        # 闲置回收后必须先恢复会话，避免缓存只有模型名的 bootstrap 占位模板。
+        # 必须先恢复会话，避免缓存只有模型名的 bootstrap 占位模板。
         ctx = await self._session.ensure_ready()
         ctx_id = ctx.context_id
         if self._active_ctx_id != ctx_id:
