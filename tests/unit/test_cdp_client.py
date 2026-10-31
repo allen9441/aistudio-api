@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,6 +25,29 @@ def test_blocked_url_patterns_coverage():
     assert "*play.google.com/log*" in BLOCKED_URL_PATTERNS
     assert "*SavePrompt*" in BLOCKED_URL_PATTERNS
     assert "*CreatePrompt*" in BLOCKED_URL_PATTERNS
+
+
+@pytest.mark.parametrize("cancel_during_send", [False, True])
+async def test_cancelled_cdp_command_releases_pending_future(cancel_during_send):
+    conn = CDPConnection("ws://127.0.0.1:9222/devtools/page/test")
+    conn.ws = AsyncMock()
+    sent = asyncio.Event()
+
+    async def send(_text):
+        sent.set()
+        if cancel_during_send:
+            await asyncio.Event().wait()
+
+    conn.ws.send.side_effect = send
+    task = asyncio.create_task(conn.send("Runtime.evaluate", timeout_s=None))
+    await sent.wait()
+    pending = list(conn._futures.values())
+    assert len(pending) == 1
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert conn._futures == {}
+    assert pending[0].cancelled()
 
 
 @pytest.mark.asyncio

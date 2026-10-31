@@ -17,7 +17,10 @@ from aistudio_api.infrastructure.browser.scripts import (
 from aistudio_api.infrastructure.gateway.capture import CapturedRequest
 from aistudio_api.infrastructure.gateway.session import BrowserSession
 from aistudio_api.infrastructure.gateway.streaming import StreamingGateway
-from aistudio_api.infrastructure.gateway.transport import XHRStreamTransport
+from aistudio_api.infrastructure.gateway.transport import (
+    STREAM_QUEUE_MAX_EVENTS,
+    XHRStreamTransport,
+)
 
 
 def test_streaming_scripts_defined_and_non_empty():
@@ -26,6 +29,81 @@ def test_streaming_scripts_defined_and_non_empty():
     assert len(STREAM_CLEANUP_JS.strip()) > 0
     assert "__AISTUDIO__" in STREAMING_INIT_JS
     assert "__AISTUDIO__" in STREAM_CLEANUP_JS
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_stream_initialization_failure_releases_queue(cancel):
+    transport = XHRStreamTransport()
+    page = MagicMock(spec=CDPPage)
+    page.is_closed.return_value = False
+    started = asyncio.Event()
+
+    async def evaluate(expr, *args, **kwargs):
+        if expr == STREAMING_INIT_JS:
+            assert transport.in_flight_count == 1
+            started.set()
+            if cancel:
+                await asyncio.Event().wait()
+            raise RuntimeError("initialization failed")
+
+    page.evaluate = AsyncMock(side_effect=evaluate)
+    stream = transport.send_streaming_request(
+        page, url="https://example.com", headers={}, body="{}"
+    )
+    task = asyncio.create_task(anext(stream))
+    await started.wait()
+    if cancel:
+        task.cancel()
+    with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+        await task
+    assert transport.in_flight_count == 0
+    assert page.evaluate.call_args.args[0] == STREAM_CLEANUP_JS
+
+
+async def test_stream_queue_overflow_fails_without_silent_truncation():
+    transport = XHRStreamTransport()
+    page = MagicMock(spec=CDPPage)
+    page.has_stream_binding = False
+    page.is_closed.return_value = False
+    listener = None
+
+    def on_binding(_name, callback):
+        nonlocal listener
+        listener = callback
+
+    page.on_binding.side_effect = on_binding
+    page.add_binding = AsyncMock()
+
+    async def evaluate(expr, args=None, **kwargs):
+        if expr == STREAMING_INIT_JS:
+            assert listener is not None
+            assert isinstance(args, dict)
+            for _ in range(STREAM_QUEUE_MAX_EVENTS + 10):
+                listener(json.dumps({"rid": args["rid"], "type": "chunk", "text": "x"}))
+
+    page.evaluate = AsyncMock(side_effect=evaluate)
+    with pytest.raises(BrowserTransportError, match="stream buffer limit exceeded"):
+        async for _ in transport.send_streaming_request(
+            page, url="https://example.com", headers={}, body="{}"
+        ):
+            pytest.fail("Overflow must not produce a silently truncated response")
+    assert transport.in_flight_count == 0
+    assert page.evaluate.call_args.args[0] == STREAM_CLEANUP_JS
+
+
+@pytest.mark.parametrize("close", [False, True])
+def test_abort_discards_full_stream_buffer(close):
+    transport = XHRStreamTransport()
+    queue = asyncio.Queue(maxsize=2)
+    queue.put_nowait({"type": "chunk", "text": "old data"})
+    queue.put_nowait({"type": "chunk", "text": "more old data"})
+    transport._queues["test"] = queue
+    if close:
+        transport.close("stopped")
+    else:
+        assert transport.abort_stream("test", "stopped")
+    assert queue.qsize() == 1
+    assert queue.get_nowait() == {"type": "error", "message": "stopped"}
 
 
 @pytest.mark.asyncio

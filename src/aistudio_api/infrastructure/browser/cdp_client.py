@@ -212,19 +212,19 @@ class CDPConnection:
             "params": params or {},
         }
         try:
-            await self.ws.send(json.dumps(payload))
-        except Exception as e:
-            self._closed = True
-            self._futures.pop(req_id, None)
-            raise RuntimeError(f"CDP connection closed: {e}") from e
+            try:
+                await self.ws.send(json.dumps(payload))
+            except Exception as e:
+                self._closed = True
+                raise RuntimeError(f"CDP connection closed: {e}") from e
 
-        try:
             if timeout_s is None or timeout_s <= 0:
                 return await fut
             return await asyncio.wait_for(fut, timeout=timeout_s)
-        except Exception:
+        finally:
             self._futures.pop(req_id, None)
-            raise
+            if not fut.done():
+                fut.cancel()
 
     def on(
         self, event: str, callback: Callable[[dict[str, object]], object]

@@ -31,6 +31,16 @@ from aistudio_api.infrastructure.utils.logger import get_logger
 
 logger = get_logger("transport")
 
+# Bound retained stream events when an HTTP client consumes slower than upstream.
+STREAM_QUEUE_MAX_EVENTS = 256
+
+
+def _fail_stream_queue(queue: asyncio.Queue[dict[str, object]], reason: str) -> None:
+    """Discard buffered data and deliver a terminal error, even for a full queue."""
+    while not queue.empty():
+        queue.get_nowait()
+    queue.put_nowait({"type": "error", "message": reason})
+
 
 def _ensure_net_trace(page: CDPPage) -> None:
     """Subscribe to $rpc/ CDP network events to attribute fetch failures."""
@@ -38,6 +48,7 @@ def _ensure_net_trace(page: CDPPage) -> None:
         return
     page.has_net_trace = True
     logger.debug("已为页面注册 $rpc/ 网络跟踪监听器")
+
     def on_request(data: dict[str, object]) -> None:
         url = str(data.get("url") or "")
         rid = str(data.get("request_id") or "")
@@ -100,6 +111,7 @@ def _log_rpc_net_evidence(page: CDPPage, where: str) -> None:
         where,
         " | ".join(parts),
     )
+
 
 def _transport_error(page: CDPPage, message: str) -> BrowserTransportError:
     exc = BrowserTransportError(message)
@@ -219,19 +231,14 @@ class XHRStreamTransport:
         """Abort a specific streaming request by rid if it is active."""
         q = self._queues.get(rid)
         if q is not None:
-            try:
-                q.put_nowait({"type": "error", "message": reason})
-                return True
-            except asyncio.QueueFull:
-                logger.warning("Abort stream failed: queue full (rid=%s)", rid)
-                return False
+            _fail_stream_queue(q, reason)
+            return True
         return False
 
     def close(self, reason: str = "transport_closed") -> None:
         """Close transport and notify any remaining in-flight queues on process exit."""
         for q in list(self._queues.values()):
-            with suppress(Exception):
-                q.put_nowait({"type": "error", "message": reason})
+            _fail_stream_queue(q, reason)
         self._queues.clear()
 
     def _ensure_page_binding(self, page: CDPPage) -> None:
@@ -249,12 +256,17 @@ class XHRStreamTransport:
                         try:
                             q.put_nowait(data)
                         except asyncio.QueueFull:
+                            # Stop accepting events until the consumer observes the
+                            # error and its finally block aborts the browser fetch.
+                            self._queues.pop(rid, None)
+                            _fail_stream_queue(q, "stream buffer limit exceeded")
                             logger.warning(
                                 "流式队列积压已满: rid=%s",
                                 rid,
                             )
             except Exception as e:
                 logger.debug("处理流式推送数据失败: %s", e)
+
         if hasattr(page, "on_binding"):
             page.on_binding("__aistudio_stream_push__", on_stream_push)
         elif hasattr(page, "cdp") and hasattr(page.cdp, "on"):
@@ -347,7 +359,9 @@ class XHRStreamTransport:
                     await page.cdp.send(
                         "Runtime.addBinding", {"name": "__aistudio_stream_push__"}
                     )
-        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(
+            maxsize=STREAM_QUEUE_MAX_EVENTS
+        )
         self._queues[rid] = queue
 
         init_args = build_streaming_init_args(
@@ -356,13 +370,12 @@ class XHRStreamTransport:
             body=body,
             rid=rid,
         )
-        await page.evaluate(STREAMING_INIT_JS, init_args)
-
         status_sent = False
         is_terminal = False
         chunk_count = 0
         total_bytes = 0
         try:
+            await page.evaluate(STREAMING_INIT_JS, init_args)
             while not is_terminal:
                 if page.is_closed() is True:
                     raise BrowserTransportError("Browser page closed during streaming")
