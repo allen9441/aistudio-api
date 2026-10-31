@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Iterable
 
+from aistudio_api.infrastructure.utils.common import mask_email
 from aistudio_api.infrastructure.utils.logger import get_logger
 
 logger = get_logger("cookie_parser")
@@ -29,8 +30,24 @@ BENEFIT_TIER_TO_NAME: dict[int, str] = {
 BENEFIT_TIER_TO_HEADER: dict[str, str] = {
     "Pro": "TIER1",
     "Ultra": "TIER2",
+    "Ultra_20X": "TIER2",
     "Plus": "TIER0",
 }
+
+_CANONICAL_TIERS: dict[str, str] = {
+    "free": "Free",
+    "plus": "Plus",
+    "pro": "Pro",
+    "ultra": "Ultra",
+    "ultra_20x": "Ultra_20X",
+}
+
+
+def normalize_benefit_tier(tier: str | None) -> str:
+    """Normalize benefit tier string into canonical name (Free / Plus / Pro / Ultra / Ultra_20X)."""
+    if not tier:
+        return "Free"
+    return _CANONICAL_TIERS.get(tier.strip().lower(), "Free")
 
 
 def parse_benefit_tier_response(raw_data: object) -> str:
@@ -57,7 +74,7 @@ def get_tier_header_value(tier: str | None) -> str | None:
     """根据账号权益等级返回对应的 X-AIStudio-G1-Tier 请求头取值。"""
     if not tier:
         return None
-    clean = tier.strip().capitalize()
+    clean = normalize_benefit_tier(tier)
     return BENEFIT_TIER_TO_HEADER.get(clean)
 
 
@@ -86,9 +103,7 @@ _DOMAIN_OVERRIDES: dict[str, list[str]] = {
     "__Secure-3PSIDTS": [".google.com", "aistudio.google.com", "accounts.google.com"],
 }
 
-# 外部导入时可安全丢弃的遥测、易失效挑战及旧环境绑定的临时 Cookie。
-# 过滤这些 Cookie 既能让网页在当前 IP/环境重新自然协商下发全新凭据，
-# 又能精简内存与 Cookie 存储体积（尤其对 Android 低内存环境极为友好）：
+# 外部导入时过滤的临时、遥测与设备绑定 Cookie，由浏览器在当前环境中自动协商生成。
 DISCARDABLE_IMPORT_COOKIE_NAMES: frozenset[str] = frozenset(
     {
         "_ga",
@@ -305,6 +320,7 @@ def parse_cookie_string(
         "origins": [],
     }
 
+
 def parse_emails_from_ogs_html(
     html_text: str, default_auth_user: str = "0"
 ) -> dict[str, str]:
@@ -387,7 +403,6 @@ async def probe_account_email(
         if u_index in root_map:
             return root_map[u_index]
     return None
-
 
 
 async def probe_account_benefit_tier(
@@ -515,15 +530,15 @@ async def probe_google_accounts_infinite(
                         }
                     )
                     logger.info(
-                        "子账号 u/%s 探活成功 (HTTP %d, email=%s, tier=%s)",
+                        "探活子账号 u/%s 成功: 状态码=%d, 邮箱=%s, 等级=%s",
                         u_index,
                         resp.status_code,
-                        detected_email or "unknown",
+                        mask_email(detected_email) if detected_email else "无",
                         detected_tier,
                     )
                 elif resp.status_code == 401:
                     consecutive_failures += 1
-                    logger.debug("子账号 u/%s 探活返回 401 (未授权)", u_index)
+                    logger.debug("子账号 u/%s 未授权 (HTTP 401)", u_index)
                 else:
                     consecutive_failures += 1
                     logger.debug(
@@ -531,7 +546,7 @@ async def probe_google_accounts_infinite(
                     )
             except Exception as e:
                 consecutive_failures += 1
-                logger.debug("子账号 u/%s 探活异常: %s", u_index, e)
+                logger.debug("子账号 u/%s 探活请求异常: %s", u_index, e)
 
             if consecutive_failures >= max_fails_in_a_row:
                 break

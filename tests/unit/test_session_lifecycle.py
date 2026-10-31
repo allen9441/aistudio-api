@@ -122,7 +122,6 @@ async def test_session_template_capture_universal_bootstrap():
     assert tpl2["url"] == "http://bootstrap.com"
 
 
-
 @pytest.mark.asyncio
 async def test_session_capture_template_breaks_on_dead_proc():
     """Verify capture_template_flow immediately raises on dead process without 30s delay."""

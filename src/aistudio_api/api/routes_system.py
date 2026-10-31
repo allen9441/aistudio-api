@@ -75,7 +75,11 @@ def stats_response() -> StatsResponse:
                         m_daily = st.daily_models[clean_m]
                         quota = resolve_tier_quota(acc.tier, clean_m)
                         used_pct = round((m_daily.requests / max(1, quota)) * 100, 1)
-                        cd_rem = max(0, int(m_daily.cooldown_until - time.time())) if m_daily.cooldown_until > time.time() else 0
+                        cd_rem = (
+                            max(0, int(m_daily.cooldown_until - time.time()))
+                            if m_daily.cooldown_until > time.time()
+                            else 0
+                        )
                         breakdown.append(
                             AccountBreakdownItem(
                                 account_id=acc.id,
@@ -92,7 +96,9 @@ def stats_response() -> StatsResponse:
                                 today_reasoning_tokens=m_daily.reasoning_tokens,
                                 configured_quota=quota,
                                 quota_used_percent=used_pct,
-                                is_available=acc.enabled and cd_rem == 0 and not st.session_expired,
+                                is_available=acc.enabled
+                                and cd_rem == 0
+                                and not st.session_expired,
                                 cooldown_remaining=cd_rem,
                             )
                         )
@@ -167,7 +173,7 @@ async def clear_cooldown(
         rotator.clear_cooldown(req.account_id, model=req.model)
     else:
         rotator.clear_all_cooldowns()
-    logger.info("已清除冷却锁定: 账号=%s, 模型=%s", req.account_id, req.model)
+    logger.info("已清除冷却状态: 账号=%s, 模型=%s", req.account_id or "全部", req.model or "全部")
 
     return {"ok": True, "accounts": rotator.get_all_stats()}
 
@@ -229,7 +235,7 @@ async def force_next_account(
     if result is None:
         raise HTTPException(500, detail="切换失败")
 
-    logger.info("已强制切换至下一可用账号: %s (%s)", result.id, result.name)
+    logger.info("强制切换到下一个账号: id=%s, name=%s", result.id, result.name)
     return {
         "ok": True,
         "account": {
@@ -270,7 +276,6 @@ async def get_system_config() -> dict[str, object]:
         "browser_headless": settings.browser_headless,
         "proxy_configured": bool(settings.proxy_url),
         "auth_enabled": settings.auth_enabled,
-        "timeout_stream": settings.timeout_stream,
         "yaml_content": yaml_content,
         "log_level": get_log_level(),
         "dump_requests": is_dump_requests_enabled(),
@@ -458,11 +463,11 @@ async def create_api_key(req: CreateApiKeyRequest) -> ApiKeyItemModel:
     )
     invalidate_config_cache()
 
-    logger.info("已创建新 API Key: 备注=%s, 密钥=%s", name, new_key[:8] + "...")
+    logger.info("创建 API Key: 备注=%s, 前缀=%s", name, new_key[:8] + "...")
     return ApiKeyItemModel(name=name, key=new_key, created_at=created_at)
 
 
-@protected_router.delete("/api-keys/{key_value}")
+@protected_router.delete("/api-keys/{key_value:path}")
 async def delete_api_key(key_value: str) -> dict[str, bool]:
     """在 config.yaml 中删除指定 API Key。"""
 
@@ -501,11 +506,11 @@ async def delete_api_key(key_value: str) -> dict[str, bool]:
     )
     invalidate_config_cache()
 
-    logger.info("已删除 API Key: %s", key_value[:8] + "...")
+    logger.info("删除 API Key: 前缀=%s", key_value[:8] + "...")
     return {"ok": True}
 
 
-@protected_router.put("/api-keys/{key_value}", response_model=ApiKeyItemModel)
+@protected_router.put("/api-keys/{key_value:path}", response_model=ApiKeyItemModel)
 async def update_api_key_name(
     key_value: str, req: UpdateApiKeyRequest
 ) -> ApiKeyItemModel:
@@ -549,6 +554,6 @@ async def update_api_key_name(
         yaml.dump(parsed, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
     invalidate_config_cache()
-    logger.info("API Key 备注名已更新: %s -> %s", key_value[:8] + "...", new_name)
+    logger.info("更新 API Key 备注: 前缀=%s, 备注=%s", key_value[:8] + "...", new_name)
 
     return updated_item
